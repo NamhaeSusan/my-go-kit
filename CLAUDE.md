@@ -18,6 +18,12 @@ my-go-kit/
 │   ├── context_test.go     # context 유닛 테스트
 │   ├── logger.go           # zap 로거 초기화 및 레벨별 로그 함수
 │   └── logger_test.go      # 로거 유닛 테스트
+├── middleware/             # HTTP 미들웨어 패키지
+│   ├── gin_trace.go        # Gin traceId 주입 미들웨어
+│   └── gin_trace_test.go   # Gin 미들웨어 유닛 테스트
+├── httpclient/             # HTTP 클라이언트 패키지
+│   ├── client.go           # trace 전파 + retry 지원 클라이언트
+│   └── client_test.go      # HTTP 클라이언트 유닛 테스트
 ├── claude_history/         # 작업 기록
 └── README.md               # 프로젝트 소개 및 Quick Start
 ```
@@ -83,27 +89,43 @@ Phase 3: 문서 에이전트 → 문서 반영
 |------|-----------|------|
 | 로깅 | `go.uber.org/zap` | 구조화 로거 (JSON 출력) |
 | 로그 로테이션 | `gopkg.in/natefinch/lumberjack.v2` | 파일 로그 자동 로테이션 (크기/기간 기반) |
+| HTTP | `github.com/gin-gonic/gin` | Gin 기반 HTTP 미들웨어 |
+| ID 생성 | `github.com/google/uuid` | traceId 자동 생성 |
 | 언어 | Go 1.26 | 런타임 |
 
 ---
 
 ## 핵심 기능 상세
 
-### 로거 초기화 (`log.Init`)
+### 로거 초기화 (`log.Init`) / 종료 (`log.Close`)
 - 콘솔(stdout) JSON 출력 기본 제공
 - 파일 경로 지정 시 lumberjack 기반 파일 로테이션 자동 추가 (1GB, 7일, gzip 압축)
 - SIGHUP 시그널 수신 시 로그 파일 수동 로테이션
 - `sync.Once`로 중복 초기화 방지
+- `Close()` — SIGHUP 리스너 정리 + 로거 Sync (graceful shutdown 시 사용)
 
 ### 레벨별 로그 함수
-- `Debug`, `Info`, `Warn`, `Error` — context에서 추적 필드를 자동 추출하여 로그에 포함
+- `Debugf`, `Infof`, `Warnf`, `Errorf` — context에서 추적 필드를 자동 추출하여 로그에 포함
 - `fmt.Sprintf` 기반 메시지 포맷팅 지원 (인자 없으면 포맷팅 생략하는 fast path)
 
 ### Context 전파 (`log/context.go`)
 - `WithTraceID` / `GetTraceID` — traceId context 주입/추출
 - `WithSpanID` / `GetSpanID` — spanId context 주입/추출
 - `WithPSpanID` / `GetPSpanID` — pSpanId (부모 span) context 주입/추출
-- 미설정 또는 빈 문자열 시 `"unknown"` 폴백
+- 미설정 또는 빈 문자열 시 `Unknown` (`"unknown"`) 폴백
+- 헤더 상수: `TraceHeader` (`X-Trace-Id`), `SpanHeader` (`X-Span-Id`), `PSpanHeader` (`X-PSpan-Id`)
+
+### Gin Trace 미들웨어 (`middleware/gin_trace.go`)
+- `GinTraceID` — `X-Trace-Id`를 읽어 request context와 response header에 traceId 동기화
+- traceId 헤더가 없거나 공백이면 UUID 기반 traceId 자동 생성
+- `c.Set("traceId", value)`로 Gin context에도 traceId 저장
+- `GinTraceIDWithConfig`로 헤더명/응답 헤더 기록 여부 커스터마이징
+
+### HTTP 클라이언트 (`httpclient/client.go`)
+- `httpclient.New` — trace 헤더 주입 및 재시도 정책이 적용된 클라이언트 생성
+- `Client.Do` — request context의 traceId를 `X-Trace-Id`로 전파, 없으면 자동 생성
+- `RetryConfig` — 최대 시도 횟수/백오프/재시도 상태코드/재시도 HTTP 메서드 설정
+- body 재생성이 불가능한 요청(`GetBody == nil`)은 안전하게 단일 시도로 제한
 
 ---
 
@@ -113,12 +135,12 @@ Phase 3: 문서 에이전트 → 문서 반영
 - [x] zap 기반 로거 초기화 (콘솔 + 파일)
 - [x] context 기반 traceId/spanId/pSpanId 전파
 - [x] lumberjack 로그 로테이션
-- [ ] Makefile 추가 (build, test, lint 타겟)
-- [ ] golangci-lint 설정 추가
+- [x] Makefile 추가 (build, test, lint 타겟)
+- [x] golangci-lint 설정 추가
 
 ### Phase 2 — 유틸리티 확장
-- [ ] 에러 핸들링 유틸리티 (errors 패키지)
-- [ ] HTTP 미들웨어 (Gin용 traceId 자동 주입)
+- [x] HTTP 미들웨어 (Gin용 traceId 자동 주입)
+- [x] HTTP 클라이언트 (trace 전파 + retry config)
 - [ ] gRPC 인터셉터 (traceId 전파)
 
 ### Phase 3 — 운영 도구

@@ -54,13 +54,13 @@ func TestFromContextUsesUnknownWhenMissing(t *testing.T) {
 	zap.L().Info("ctx unknown", fields...)
 
 	entry := logs.All()[0]
-	if got := entry.ContextMap()[traceFieldName]; got != unknown {
+	if got := entry.ContextMap()[traceFieldName]; got != Unknown {
 		t.Fatalf("unexpected traceId: %#v", got)
 	}
-	if got := entry.ContextMap()[spanIDFieldName]; got != unknown {
+	if got := entry.ContextMap()[spanIDFieldName]; got != Unknown {
 		t.Fatalf("unexpected spanId: %#v", got)
 	}
-	if got := entry.ContextMap()[pSpanIDFieldName]; got != unknown {
+	if got := entry.ContextMap()[pSpanIDFieldName]; got != Unknown {
 		t.Fatalf("unexpected pSpanId: %#v", got)
 	}
 }
@@ -142,7 +142,41 @@ func TestFormatMessageFastPath(t *testing.T) {
 	}
 }
 
+func TestCloseStopsSIGHUPListener(t *testing.T) {
+	prev := zap.L()
+	defer zap.ReplaceGlobals(prev)
+
+	resetInitStateForTest()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+	if err := Init(logPath); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	// Close may return a benign stdout sync error — only check sigCh cleanup.
+	_ = Close()
+
+	if sigCh != nil {
+		t.Fatal("expected sigCh to be nil after Close")
+	}
+}
+
+func TestCloseWithoutFileInit(t *testing.T) {
+	prev := zap.L()
+	defer zap.ReplaceGlobals(prev)
+
+	resetInitStateForTest()
+	if err := Init(""); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	// Close may return a benign stdout sync error — just verify no panic.
+	_ = Close()
+}
+
 func resetInitStateForTest() {
 	initErr = nil
 	initOnce = sync.Once{}
+	sigCh = nil
 }

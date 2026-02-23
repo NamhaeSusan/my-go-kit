@@ -17,8 +17,14 @@ import (
 var (
 	initOnce sync.Once
 	initErr  error
+	sigMu    sync.Mutex
+	sigCh    chan os.Signal
 )
 
+// Init initializes the global logger. If logFilePath is non-empty, file
+// output with lumberjack rotation is added. Init is safe for concurrent use
+// but only the first call takes effect (sync.Once). If the first call fails,
+// the error is permanent — callers should panic or os.Exit on failure.
 func Init(logFilePath string) error {
 	initOnce.Do(func() {
 		atomicLevel := zap.NewAtomicLevelAt(zapcore.InfoLevel)
@@ -45,22 +51,22 @@ func Init(logFilePath string) error {
 		cores = append(cores, consoleCore)
 
 		if logFilePath != "" {
-			if err := os.MkdirAll(filepath.Dir(logFilePath), os.ModePerm); err != nil {
+			if err := os.MkdirAll(filepath.Dir(logFilePath), 0o750); err != nil {
 				initErr = err
 				return
 			}
 			fileLogger := &lumberjack.Logger{
 				Filename:  logFilePath,
-				MaxSize:   1024, // 1MB
+				MaxSize:   1024, // 1GB
 				MaxAge:    7,    // 7 days
 				Compress:  true,
 				LocalTime: true,
 			}
 
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, syscall.SIGHUP)
+			sigCh = make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGHUP)
 			go func() {
-				for range c {
+				for range sigCh {
 					if err := fileLogger.Rotate(); err != nil {
 						_, _ = fmt.Fprintf(os.Stderr, "log rotate failed: %v\n", err)
 					}
@@ -82,6 +88,19 @@ func Init(logFilePath string) error {
 
 func Sync() error {
 	return zap.L().Sync()
+}
+
+// Close stops the SIGHUP listener (if started) and syncs the global logger.
+// Safe for concurrent use. After Close, Init cannot be called again (sync.Once is consumed).
+func Close() error {
+	sigMu.Lock()
+	if sigCh != nil {
+		signal.Stop(sigCh)
+		close(sigCh)
+		sigCh = nil
+	}
+	sigMu.Unlock()
+	return Sync()
 }
 
 func FromContext(ctx context.Context) []zap.Field {
