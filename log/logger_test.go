@@ -2,6 +2,8 @@ package log
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -10,68 +12,137 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-func TestFromContextAlwaysAddsTraceID(t *testing.T) {
-	resetGlobalLoggerState()
+func TestFromContextAddsAllFields(t *testing.T) {
+	ctx := WithTraceID(context.Background(), "t-1")
+	ctx = WithSpanID(ctx, "s-1")
+	ctx = WithPSpanID(ctx, "p-1")
+	fields := FromContext(ctx)
+	if got := len(fields); got != 3 {
+		t.Fatalf("unexpected field count: %d", got)
+	}
 
 	core, logs := observer.New(zapcore.DebugLevel)
-	setBaseLoggerForTest(zap.New(core))
+	logger := zap.New(core)
+	prev := zap.L()
+	zap.ReplaceGlobals(logger)
+	t.Cleanup(func() { zap.ReplaceGlobals(prev) })
+	zap.L().Info("ctx fields", fields...)
 
-	FromContext(context.Background()).Info("without trace")
-	FromContext(WithTraceID(context.Background(), "t-1")).Info("with trace")
-
-	entries := logs.All()
-	if len(entries) != 2 {
-		t.Fatalf("unexpected log count: %d", len(entries))
-	}
-
-	if got := entries[0].ContextMap()[traceFieldName]; got != unknownTraceID {
+	entry := logs.All()[0]
+	if got := entry.ContextMap()[traceFieldName]; got != "t-1" {
 		t.Fatalf("unexpected traceId: %#v", got)
 	}
-
-	if got := entries[1].ContextMap()[traceFieldName]; got != "t-1" {
-		t.Fatalf("unexpected traceId: %#v", got)
+	if got := entry.ContextMap()[spanIDFieldName]; got != "s-1" {
+		t.Fatalf("unexpected spanId: %#v", got)
+	}
+	if got := entry.ContextMap()[pSpanIDFieldName]; got != "p-1" {
+		t.Fatalf("unexpected pSpanId: %#v", got)
 	}
 }
 
-func TestLazyInitBeforeInitCall(t *testing.T) {
-	resetGlobalLoggerState()
+func TestFromContextUsesUnknownWhenMissing(t *testing.T) {
+	fields := FromContext(context.Background())
+	if got := len(fields); got != 3 {
+		t.Fatalf("unexpected field count: %d", got)
+	}
 
-	Info(context.Background(), "lazy init")
+	core, logs := observer.New(zapcore.DebugLevel)
+	logger := zap.New(core)
+	prev := zap.L()
+	zap.ReplaceGlobals(logger)
+	t.Cleanup(func() { zap.ReplaceGlobals(prev) })
+	zap.L().Info("ctx unknown", fields...)
 
-	baseMu.RLock()
-	logger := base
-	baseMu.RUnlock()
-	if logger == nil {
-		t.Fatal("base logger should be initialized")
+	entry := logs.All()[0]
+	if got := entry.ContextMap()[traceFieldName]; got != unknown {
+		t.Fatalf("unexpected traceId: %#v", got)
+	}
+	if got := entry.ContextMap()[spanIDFieldName]; got != unknown {
+		t.Fatalf("unexpected spanId: %#v", got)
+	}
+	if got := entry.ContextMap()[pSpanIDFieldName]; got != unknown {
+		t.Fatalf("unexpected pSpanId: %#v", got)
 	}
 }
 
-func TestLevelHelpersDoNotPanic(t *testing.T) {
-	resetGlobalLoggerState()
-
+func TestLevelHelpersWriteContextFields(t *testing.T) {
 	core, logs := observer.New(zapcore.DebugLevel)
-	setBaseLoggerForTest(zap.New(core))
+	logger := zap.New(core)
+	prev := zap.L()
+	zap.ReplaceGlobals(logger)
+	t.Cleanup(func() { zap.ReplaceGlobals(prev) })
 
-	Debug(context.Background(), "debug")
-	Info(WithTraceID(context.Background(), "abc"), "info")
-	Warn(context.Background(), "warn")
-	Error(context.Background(), "error")
+	ctx := WithTraceID(context.Background(), "abc")
+	ctx = WithSpanID(ctx, "span")
+	ctx = WithPSpanID(ctx, "parent")
+
+	Debugf(context.Background(), "debug %d", 1)
+	Infof(ctx, "info %s", "ok")
+	Warnf(context.Background(), "warn")
+	Errorf(context.Background(), "error")
 
 	if got := logs.Len(); got != 4 {
 		t.Fatalf("unexpected log count: %d", got)
 	}
+
+	entries := logs.All()
+	if msg := entries[0].Message; msg != "debug 1" {
+		t.Fatalf("unexpected debug message: %q", msg)
+	}
+	if msg := entries[1].Message; msg != "info ok" {
+		t.Fatalf("unexpected info message: %q", msg)
+	}
+	if got := entries[1].ContextMap()[traceFieldName]; got != "abc" {
+		t.Fatalf("unexpected traceId: %#v", got)
+	}
+	if got := entries[1].ContextMap()[spanIDFieldName]; got != "span" {
+		t.Fatalf("unexpected spanId: %#v", got)
+	}
+	if got := entries[1].ContextMap()[pSpanIDFieldName]; got != "parent" {
+		t.Fatalf("unexpected pSpanId: %#v", got)
+	}
 }
 
-func resetGlobalLoggerState() {
-	baseMu.Lock()
-	base = nil
-	baseMu.Unlock()
+func TestInitWithEmptyPathSetsGlobalLogger(t *testing.T) {
+	prev := zap.L()
+	defer zap.ReplaceGlobals(prev)
+
+	resetInitStateForTest()
+	if err := Init(""); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	Infof(context.Background(), "init ok")
+}
+
+func TestInitReturnsErrorForInvalidLogPath(t *testing.T) {
+	prev := zap.L()
+	defer zap.ReplaceGlobals(prev)
+
+	resetInitStateForTest()
+
+	tmpDir := t.TempDir()
+	fileAsDir := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(fileAsDir, []byte("x"), 0o644); err != nil {
+		t.Fatalf("failed to setup test file: %v", err)
+	}
+	invalidPath := filepath.Join(fileAsDir, "app.log")
+
+	if err := Init(invalidPath); err == nil {
+		t.Fatal("expected Init to return error for invalid log path")
+	}
+}
+
+func TestFormatMessageFastPath(t *testing.T) {
+	if got := formatMessage("plain message"); got != "plain message" {
+		t.Fatalf("unexpected message: %q", got)
+	}
+	if got := formatMessage("hello %s", "world"); got != "hello world" {
+		t.Fatalf("unexpected formatted message: %q", got)
+	}
+}
+
+func resetInitStateForTest() {
 	initErr = nil
 	initOnce = sync.Once{}
-}
-
-func setBaseLoggerForTest(logger *zap.Logger) {
-	baseMu.Lock()
-	base = logger
-	baseMu.Unlock()
 }

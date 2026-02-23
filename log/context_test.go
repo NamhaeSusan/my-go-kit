@@ -13,20 +13,46 @@ func TestWithTraceIDAndGetTraceID(t *testing.T) {
 }
 
 func TestGetTraceIDMissingReturnsUnknown(t *testing.T) {
-	if got := GetTraceID(context.Background()); got != unknownTraceID {
+	if got := GetTraceID(context.Background()); got != unknown {
 		t.Fatalf("unexpected traceId: %q", got)
 	}
 }
 
 func TestGetTraceIDNilContextReturnsUnknown(t *testing.T) {
-	if got := GetTraceID(nil); got != unknownTraceID {
+	if got := GetTraceID(nil); got != unknown { //nolint:staticcheck // intentional nil context test
 		t.Fatalf("unexpected traceId: %q", got)
 	}
 }
 
 func TestGetTraceIDEmptyReturnsUnknown(t *testing.T) {
 	ctx := WithTraceID(context.Background(), "")
-	if got := GetTraceID(ctx); got != unknownTraceID {
+	if got := GetTraceID(ctx); got != unknown {
 		t.Fatalf("unexpected traceId: %q", got)
+	}
+}
+
+func TestWithSpanIDAndGetSpanID(t *testing.T) {
+	ctx := WithSpanID(context.Background(), "span-1")
+	if got := GetSpanID(ctx); got != "span-1" {
+		t.Fatalf("unexpected spanId: %q", got)
+	}
+}
+
+func TestGetSpanIDMissingReturnsUnknown(t *testing.T) {
+	if got := GetSpanID(context.Background()); got != unknown {
+		t.Fatalf("unexpected spanId: %q", got)
+	}
+}
+
+func TestWithPSpanIDAndGetPSpanID(t *testing.T) {
+	ctx := WithPSpanID(context.Background(), "pspan-1")
+	if got := GetPSpanID(ctx); got != "pspan-1" {
+		t.Fatalf("unexpected pSpanId: %q", got)
+	}
+}
+
+func TestGetPSpanIDMissingReturnsUnknown(t *testing.T) {
+	if got := GetPSpanID(context.Background()); got != unknown {
+		t.Fatalf("unexpected pSpanId: %q", got)
 	}
 }

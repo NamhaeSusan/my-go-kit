@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	_ = kitlog.Init()
+	_ = kitlog.Init("")
 	defer kitlog.Sync()
 
 	ctx := kitlog.WithTraceID(context.Background(), "abc-123")
