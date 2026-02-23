@@ -52,6 +52,7 @@ CLAUDE.md와 README.md 는 필수로 업데이트 하도록 한다.
 | 새 의존성 추가 | `CLAUDE.md` 기술 스택, `README.md` |
 | 새 Feature 추가 | `CLAUDE.md` 기능 상세, `README.md` Features |
 | 새 로그 레벨/함수 추가 | `CLAUDE.md` 기능 상세, `README.md` Quick Start |
+| 공개 API 변경 (추가/수정/삭제) | `~/.claude/rules/go-kit-examples.md` |
 
 ---
 
