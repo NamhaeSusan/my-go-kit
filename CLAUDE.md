@@ -24,6 +24,14 @@ my-go-kit/
 ├── httpclient/             # HTTP 클라이언트 패키지
 │   ├── client.go           # trace 전파 + retry 지원 클라이언트
 │   └── client_test.go      # HTTP 클라이언트 유닛 테스트
+├── grpcclient/             # gRPC 클라이언트/인터셉터 패키지
+│   ├── client.go           # gRPC 커넥션 풀 래퍼 (NewClient)
+│   ├── client_test.go      # gRPC client 유닛 테스트
+│   └── interceptor/        # gRPC 인터셉터 서브패키지
+│       ├── trace.go            # client/server trace 인터셉터 (metadata 전파)
+│       ├── trace_test.go       # trace 인터셉터 유닛 테스트
+│       ├── logging.go          # client/server logging 인터셉터
+│       └── logging_test.go     # logging 인터셉터 유닛 테스트
 ├── claude_history/         # 작업 기록
 └── README.md               # 프로젝트 소개 및 Quick Start
 ```
@@ -91,6 +99,7 @@ Phase 3: 문서 에이전트 → 문서 반영
 | 로깅 | `go.uber.org/zap` | 구조화 로거 (JSON 출력) |
 | 로그 로테이션 | `gopkg.in/natefinch/lumberjack.v2` | 파일 로그 자동 로테이션 (크기/기간 기반) |
 | HTTP | `github.com/gin-gonic/gin` | Gin 기반 HTTP 미들웨어 |
+| gRPC | `google.golang.org/grpc` | gRPC client/server interceptor |
 | ID 생성 | `github.com/google/uuid` | traceId 자동 생성 |
 | 언어 | Go 1.26 | 런타임 |
 
@@ -128,6 +137,21 @@ Phase 3: 문서 에이전트 → 문서 반영
 - `RetryConfig` — 최대 시도 횟수/백오프/재시도 상태코드/재시도 HTTP 메서드 설정
 - body 재생성이 불가능한 요청(`GetBody == nil`)은 안전하게 단일 시도로 제한
 
+### gRPC 클라이언트 (`grpcclient/client.go`)
+- `grpcclient.NewClient` — trace/logging interceptor 체인이 기본 적용된 gRPC 커넥션 풀 생성
+- `Config.MaxConnections` — 풀 크기 설정 (기본 4)
+- `Client.GetConn` — 라운드로빈으로 커넥션 반환
+- `Client.Reconnect` — 특정 커넥션 교체
+- `Client.Close` — 모든 커넥션 정리 (`errors.Join`으로 에러 수집)
+
+### gRPC 인터셉터 (`grpcclient/interceptor/`)
+- `UnaryClientTraceInterceptor` / `StreamClientTraceInterceptor` — context의 trace/span 정보를 outbound metadata로 전파
+- `UnaryServerTraceInterceptor` / `StreamServerTraceInterceptor` — inbound metadata를 context(trace/span/pspan)로 복원
+- `UnaryClientLoggingInterceptor` / `StreamClientLoggingInterceptor` — client 요청 로깅 (서비스/메서드/grpc_code/elapsed 기록)
+- `UnaryServerLoggingInterceptor` / `StreamServerLoggingInterceptor` — server 요청 로깅 (동일 필드)
+- metadata 키는 `x-trace-id`, `x-span-id`, `x-pspan-id`를 사용 (HTTP 헤더 의미와 동일)
+- trace/span 누락 시 자동 생성, pSpan 누락 시 `unknown` 폴백
+
 ---
 
 ## 로드맵
@@ -142,7 +166,7 @@ Phase 3: 문서 에이전트 → 문서 반영
 ### Phase 2 — 유틸리티 확장
 - [x] HTTP 미들웨어 (Gin용 traceId 자동 주입)
 - [x] HTTP 클라이언트 (trace 전파 + retry config)
-- [ ] gRPC 인터셉터 (traceId 전파)
+- [x] gRPC 인터셉터 (traceId 전파)
 
 ### Phase 3 — 운영 도구
 - [ ] 헬스체크 유틸리티
