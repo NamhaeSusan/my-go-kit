@@ -1,8 +1,20 @@
 # my-go-kit
 
-`zap` 기반의 경량 로깅 키트입니다.
+`my-go-kit`은 Go 서비스에서 공통으로 쓰는 기반 기능을 모아둔 경량 유틸 패키지입니다.
 
-## Quick Start
+구성:
+- `log`: `zap` 기반 구조화 로깅 + trace/span context 필드
+- `middleware`: Gin용 trace/span 전파 미들웨어
+- `httpclient`: trace 헤더 전파 + 재시도 HTTP 클라이언트
+- `grpcclient`: gRPC 연결 풀 + trace/logging 인터셉터
+
+## Install
+
+```bash
+go get github.com/NamhaeSusan/my-go-kit
+```
+
+## 1) Logging (`log`)
 
 ```go
 package main
@@ -15,17 +27,21 @@ import (
 
 func main() {
 	_ = kitlog.Init("")
-	defer kitlog.Close() // stops SIGHUP listener + Sync
+	defer kitlog.Close()
 
-	ctx := kitlog.WithTraceID(context.Background(), "abc-123")
+	ctx := kitlog.WithTraceID(context.Background(), "trace-1")
+	ctx = kitlog.WithSpanID(ctx, "span-1")
+	ctx = kitlog.WithPSpanID(ctx, "unknown")
+
 	kitlog.Infof(ctx, "user login: %s", "kim")
-	kitlog.Infof(context.Background(), "no trace id in context")
 }
 ```
 
-`context`에 trace id가 없으면 `traceId=unknown`이 자동으로 기록됩니다.
+동작:
+- context에 값이 없으면 `traceId/spanId/pSpanId`는 `unknown`으로 기록됩니다.
+- 로그 필드명: `traceId`, `spanId`, `pSpanId`
 
-## Gin Middleware
+## 2) Gin Middleware (`middleware`)
 
 ```go
 package main
@@ -41,9 +57,15 @@ func main() {
 }
 ```
 
-`X-Trace-Id`가 없으면 trace id를 자동 생성해 request context와 response header에 주입합니다.
+동작:
+- 요청 헤더 `X-Trace-Id`, `X-Span-Id`, `X-PSpan-Id`를 읽어 request context와 gin context에 주입
+- 누락 시:
+  - `traceId`: 자동 생성
+  - `spanId`: 자동 생성
+  - `pSpanId`: `unknown`
+- 기본값으로 동일 헤더를 response에도 기록
 
-## HTTP Client (Trace + Retry)
+## 3) HTTP Client (`httpclient`)
 
 ```go
 package main
@@ -66,44 +88,70 @@ func main() {
 		},
 	})
 
-	ctx := kitlog.WithTraceID(context.Background(), "trace-abc")
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	ctx := kitlog.WithTraceID(context.Background(), "trace-http-1")
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com", nil)
 	_, _ = client.Do(ctx, req)
 }
 ```
 
-- request context에 traceId가 있으면 `X-Trace-Id` 헤더로 자동 전파됩니다.
-- traceId가 없으면 자동 생성 후 헤더에 주입됩니다.
-- 기본 재시도 대상은 `GET/HEAD/OPTIONS/PUT/DELETE` + `429/500/502/503/504` 입니다.
+동작:
+- outbound header 자동 주입:
+  - `X-Trace-Id`: context trace 또는 신규 생성
+  - `X-PSpan-Id`: 현재 span
+  - `X-Span-Id`: 신규 span
+- 기본 재시도 메서드: `GET/HEAD/OPTIONS/PUT/DELETE`
+- 기본 재시도 상태코드: `429/500/502/503/504`
+- 재시도 간격: 지수 백오프 (`BaseDelay` ~ `MaxDelay`)
 
-## gRPC Client + Interceptor (Trace)
+## 4) gRPC Client (`grpcclient`)
 
 ```go
 package main
 
 import (
-	"context"
 	"log"
+	"time"
 
 	kitgrpc "github.com/NamhaeSusan/my-go-kit/grpcclient"
-	kitlog "github.com/NamhaeSusan/my-go-kit/log"
 )
 
 func main() {
-	client, err := kitgrpc.NewClient("localhost:50051", kitgrpc.Config{})
+	client, err := kitgrpc.NewClient("localhost:50051", kitgrpc.Config{
+		MaxConnections: 4,
+		IdleTimeout:    10 * time.Minute,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
-	ctx := kitlog.WithTraceID(context.Background(), "trace-grpc-1")
-	ctx = kitlog.WithSpanID(ctx, "span-grpc-1")
-
-	// client.GetConn().Invoke / generated pb client에 conn 전달 시 interceptor가 metadata를 자동 주입
-	_ = client.GetConn()
-	_ = ctx
+	conn := client.GetConn()
+	_ = conn
 }
 ```
 
-- client interceptor는 context의 trace/span 값을 gRPC metadata(`x-trace-id`, `x-span-id`, `x-pspan-id`)로 자동 전파합니다.
-- server interceptor는 inbound metadata를 context로 복원하며, 누락 값은 trace/span 자동 생성 + pSpan=`unknown`을 사용합니다.
+클라이언트 기본 인터셉터:
+- Trace 전파 인터셉터
+- Logging 인터셉터
+
+클라이언트 로깅 필드:
+- `elapsed` (ms)
+- `method`
+- `service`
+- `grpc_code`
+- `log_type=grpc`
+
+서버 측 인터셉터도 별도 제공:
+- `interceptor.UnaryServerTraceInterceptor()`
+- `interceptor.StreamServerTraceInterceptor()`
+- `interceptor.UnaryServerLoggingInterceptor()`
+- `interceptor.StreamServerLoggingInterceptor()`
+
+## 패키지 구조
+
+```text
+log/
+middleware/
+httpclient/
+grpcclient/
+```
